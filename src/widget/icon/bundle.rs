@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Embedded icons for platforms which do not support icon themes yet.
+//!
+//! On macOS icon themes are looked up first and these are the last fallback.
 
 /// Icon bundling is not enabled on unix platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
