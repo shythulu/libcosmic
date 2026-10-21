@@ -11,6 +11,26 @@ use std::sync::Arc;
 
 type BoxedSetting = Arc<Box<dyn Any + Send + Sync + 'static>>;
 
+/// Whether menus open in surfaces of their own rather than as overlays drawn inside their
+/// window. True on Wayland, through popup surfaces, and on macOS, through popup windows
+/// (see [`action::macos_popup`]). Menus in surfaces can extend past the window's edges.
+#[must_use]
+pub fn popups_are_surfaces() -> bool {
+    #[cfg(wayland_platform)]
+    {
+        use crate::app::cosmic::{WINDOWING_SYSTEM, WindowingSystem};
+        matches!(WINDOWING_SYSTEM.get(), Some(WindowingSystem::Wayland))
+    }
+    #[cfg(all(not(wayland_platform), target_os = "macos", feature = "winit"))]
+    {
+        true
+    }
+    #[cfg(not(any(wayland_platform, all(target_os = "macos", feature = "winit"))))]
+    {
+        false
+    }
+}
+
 /// Produces the content of a surface created from within a widget.
 ///
 /// Typed on the message the widget publishes.

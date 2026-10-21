@@ -86,6 +86,15 @@ fn init_windowing_system<M>(handle: window::raw_window_handle::WindowHandle) -> 
     crate::Action::Cosmic(Action::WindowingSystemInitialized)
 }
 
+/// Boxes a popup's view the way `surface_views` stores views. Naming the boxed type in the
+/// return position lets the closure take the higher-ranked lifetime.
+#[cfg(all(target_os = "macos", feature = "winit"))]
+fn macos_popup_view<App: Application>(
+    view: crate::surface::View<App::Message>,
+) -> Box<dyn for<'a> Fn(&'a App) -> Element<'a, crate::Action<App::Message>> + Send + Sync> {
+    Box::new(move |_| view())
+}
+
 #[derive(Default)]
 pub struct Cosmic<App: Application> {
     pub app: App,
@@ -237,6 +246,33 @@ where
                 let settings = settings(&mut self.app);
 
                 self.get_popup(settings, *live_settings, view.map(|v| *v))
+            }
+            #[cfg(all(target_os = "macos", feature = "winit"))]
+            crate::surface::Action::DestroyPopup(id) => {
+                // A Wayland compositor takes a popup's child popups with it; do the same.
+                let mut closing = vec![id];
+                let mut next = 0;
+                while let Some(&parent) = closing.get(next) {
+                    closing.extend(
+                        self.surface_views
+                            .iter()
+                            .filter(|(_, (of, ..))| *of == Some(parent))
+                            .map(|(child, _)| *child),
+                    );
+                    next += 1;
+                }
+                Task::batch(closing.into_iter().rev().map(iced::window::close))
+            }
+            #[cfg(all(target_os = "macos", feature = "winit"))]
+            crate::surface::Action::Popup(settings, _, view) => {
+                let Some(settings) = std::sync::Arc::try_unwrap(settings).ok().and_then(|s| {
+                    s.downcast::<crate::surface::action::MacosPopupSettings>()
+                        .ok()
+                }) else {
+                    tracing::error!("Invalid settings for popup");
+                    return Task::none();
+                };
+                self.get_macos_popup(*settings, view)
             }
             #[cfg(wayland_platform)]
             crate::surface::Action::DestroyPopup(id) => {
@@ -706,7 +742,10 @@ where
     #[cfg(feature = "multi-window")]
     pub fn view(&self, id: window::Id) -> Element<'_, crate::Action<T::Message>> {
         crate::widget::text_context_menu::set_current_window_id(id);
-        #[cfg(all(wayland_platform, target_os = "linux"))]
+        #[cfg(any(
+            all(wayland_platform, target_os = "linux"),
+            all(target_os = "macos", feature = "winit")
+        ))]
         if let Some((_, _, _, Some(v))) = self.surface_views.get(&id) {
             return v(&self.app);
         }
@@ -1675,6 +1714,49 @@ impl<App: Application> Cosmic<App> {
             ),
         );
         live_settings_task.chain(get_popup(settings)).discard()
+    }
+
+    /// Opens a menu popup on macOS as a panel window, and registers its view the way
+    /// [`Self::get_popup`] does for a Wayland popup surface, so [`Self::view`] draws it.
+    #[cfg(all(target_os = "macos", feature = "winit"))]
+    pub fn get_macos_popup(
+        &mut self,
+        settings: crate::surface::action::MacosPopupSettings,
+        view: Option<crate::surface::View<App::Message>>,
+    ) -> Task<crate::Action<App::Message>> {
+        let id = settings.id;
+        *self.opened_surfaces.entry(id).or_insert(0) += 1;
+        self.surface_views.insert(
+            id,
+            (
+                Some(settings.parent),
+                SurfaceIdWrapper::Popup(id),
+                Box::new(|_| crate::surface::action::LiveSettings::default()),
+                view.map(macos_popup_view::<App>),
+            ),
+        );
+        let window_settings = window::Settings {
+            size: settings.size,
+            position: window::Position::Specific(settings.offset),
+            decorations: false,
+            transparent: true,
+            resizable: false,
+            exit_on_close_request: false,
+            platform_specific: window::settings::PlatformSpecific {
+                popup_of: Some(settings.parent),
+                popup_flip_x: settings.flip_x,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        iced_runtime::task::oneshot(move |channel| {
+            iced_runtime::Action::Window(iced_runtime::window::Action::Open(
+                id,
+                window_settings,
+                channel,
+            ))
+        })
+        .discard()
     }
 
     #[cfg(wayland_platform)]

@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use super::menu_bar::MenuBarState;
 use super::menu_tree::MenuTree;
-#[cfg(wayland_platform)]
-use crate::app::cosmic::{WINDOWING_SYSTEM, WindowingSystem};
 use crate::style::menu_bar::StyleSheet;
 
 use iced::{Alignment, window};
@@ -676,8 +674,11 @@ impl<'b, Message: Clone + 'static> Menu<'b, Message> {
                         needs_reset |= self.close_condition.click_outside && !is_inside;
 
                         if needs_reset {
-                            #[cfg(wayland_platform)]
-                            if matches!(WINDOWING_SYSTEM.get(), Some(WindowingSystem::Wayland))
+                            #[cfg(any(
+                                wayland_platform,
+                                all(target_os = "macos", feature = "winit")
+                            ))]
+                            if crate::surface::popups_are_surfaces()
                                 && let Some(handler) = self.on_surface_action.as_ref()
                             {
                                 let mut root = self.window_id;
@@ -983,17 +984,10 @@ impl<Message: std::clone::Clone + 'static> Widget<Message, crate::Theme, crate::
     ) {
         let new_root = self.update(event, layout, cursor, renderer, clipboard, shell);
 
-        #[cfg(wayland_platform)]
-        if matches!(WINDOWING_SYSTEM.get(), Some(WindowingSystem::Wayland))
+        #[cfg(any(wayland_platform, all(target_os = "macos", feature = "winit")))]
+        if crate::surface::popups_are_surfaces()
             && let Some((new_root, new_ms)) = new_root
         {
-            use iced_runtime::platform_specific::wayland::CornerRadius;
-            use iced_runtime::platform_specific::wayland::popup::{
-                SctkPopupSettings, SctkPositioner,
-            };
-
-            use crate::surface::action::LiveSettings;
-            use crate::theme::THEME;
             let overlay_offset = Point::ORIGIN - viewport.position();
 
             let overlay_cursor = cursor.position().unwrap_or_default() - overlay_offset;
@@ -1055,7 +1049,16 @@ impl<Message: std::clone::Clone + 'static> Widget<Message, crate::Theme, crate::
                 layout.bounds(),
                 self.main_offset as f32,
             );
-            let (anchor_rect, gravity) = self.tree.inner.with_data_mut(|state| {
+            #[cfg(wayland_platform)]
+            {
+                use iced_runtime::platform_specific::wayland::CornerRadius;
+                use iced_runtime::platform_specific::wayland::popup::{
+                    SctkPopupSettings, SctkPositioner,
+                };
+
+                use crate::surface::action::LiveSettings;
+                use crate::theme::THEME;
+                let (anchor_rect, gravity) = self.tree.inner.with_data_mut(|state| {
                 (state
                     .menu_states
                     .get(self.depth + 1)
@@ -1084,15 +1087,15 @@ impl<Message: std::clone::Clone + 'static> Widget<Message, crate::Theme, crate::
                     })
             });
 
-            let menu_node = Widget::layout(
-                &mut menu,
-                &mut Tree::empty(),
-                renderer,
-                &Limits::NONE.min_width(1.).min_height(1.),
-            );
+                let menu_node = Widget::layout(
+                    &mut menu,
+                    &mut Tree::empty(),
+                    renderer,
+                    &Limits::NONE.min_width(1.).min_height(1.),
+                );
 
-            let popup_size = menu_node.size();
-            let mut positioner = SctkPositioner {
+                let popup_size = menu_node.size();
+                let mut positioner = SctkPositioner {
                 size: Some((
                     popup_size.width.ceil() as u32 + 2,
                     popup_size.height.ceil() as u32 + 2,
@@ -1104,43 +1107,98 @@ impl<Message: std::clone::Clone + 'static> Widget<Message, crate::Theme, crate::
                 reactive: true,
                 ..Default::default()
             };
-            // disable slide_x if it is set in the default
-            positioner.constraint_adjustment &= !(1 << 0);
-            let parent = self.window_id;
+                // disable slide_x if it is set in the default
+                positioner.constraint_adjustment &= !(1 << 0);
+                let parent = self.window_id;
 
-            let t = THEME.lock().unwrap();
-            let styling = t.appearance(&crate::theme::menu_bar::MenuBarStyle::Default, false);
-            drop(t);
-            let rad = styling.menu_border_radius;
+                let t = THEME.lock().unwrap();
+                let styling = t.appearance(&crate::theme::menu_bar::MenuBarStyle::Default, false);
+                drop(t);
+                let rad = styling.menu_border_radius;
 
-            shell.publish((self.on_surface_action.as_ref().unwrap())(
-                crate::surface::action::simple_popup(
-                    move || LiveSettings {
-                        corners: Some(CornerRadius {
-                            top_left: rad[0] as u32,
-                            top_right: rad[1] as u32,
-                            bottom_left: rad[2] as u32,
-                            bottom_right: rad[3] as u32,
+                shell.publish((self.on_surface_action.as_ref().unwrap())(
+                    crate::surface::action::simple_popup(
+                        move || LiveSettings {
+                            corners: Some(CornerRadius {
+                                top_left: rad[0] as u32,
+                                top_right: rad[1] as u32,
+                                bottom_left: rad[2] as u32,
+                                bottom_right: rad[3] as u32,
+                            }),
+                            ..Default::default()
+                        },
+                        move || SctkPopupSettings {
+                            parent,
+                            id: popup_id,
+                            positioner: positioner.clone(),
+                            parent_size: None,
+                            grab: true,
+                            close_with_children: false,
+                            input_zone: None,
+                        },
+                        Some(move || {
+                            crate::Element::from(
+                                crate::widget::container(menu.clone()).center(Length::Fill),
+                            )
+                            .map(crate::action::app)
                         }),
-                        ..Default::default()
+                    ),
+                ));
+            }
+            #[cfg(all(target_os = "macos", feature = "winit"))]
+            {
+                use crate::surface::action::{MacosPopupSettings, macos_popup};
+
+                // The item that opened the submenu, in the parent popup's coordinates.
+                let (item, horizontal, vertical) = self.tree.inner.with_data_mut(|state| {
+                    (
+                        state
+                            .menu_states
+                            .get(self.depth + 1)
+                            .map_or_else(|| layout.bounds(), |s| s.menu_bounds.parent_bounds),
+                        state.horizontal_direction,
+                        state.vertical_direction,
+                    )
+                });
+                let menu_node = Widget::layout(
+                    &mut menu,
+                    &mut Tree::empty(),
+                    renderer,
+                    &Limits::NONE.min_width(1.).min_height(1.),
+                );
+                let popup_size = menu_node.size();
+                let size = Size::new(popup_size.width.ceil() + 2., popup_size.height.ceil() + 2.);
+                // Beside the item, on the side the menu grows towards, as the Wayland
+                // positioner anchors it. iced_winit then keeps it on screen.
+                let offset = Point::new(
+                    match horizontal {
+                        Direction::Positive => item.x + item.width,
+                        Direction::Negative => item.x - size.width,
                     },
-                    move || SctkPopupSettings {
-                        parent,
-                        id: popup_id,
-                        positioner: positioner.clone(),
-                        parent_size: None,
-                        grab: true,
-                        close_with_children: false,
-                        input_zone: None,
+                    match vertical {
+                        Direction::Positive => item.y,
+                        Direction::Negative => item.y + item.height - size.height,
                     },
-                    Some(move || {
+                );
+                let settings = MacosPopupSettings {
+                    parent: self.window_id,
+                    id: popup_id,
+                    offset,
+                    size,
+                    // Short of room on the right, open on the item's left instead.
+                    flip_x: matches!(horizontal, Direction::Positive)
+                        .then_some(item.x - size.width),
+                };
+                shell.publish((self.on_surface_action.as_ref().unwrap())(macos_popup(
+                    settings,
+                    move || {
                         crate::Element::from(
                             crate::widget::container(menu.clone()).center(Length::Fill),
                         )
                         .map(crate::action::app)
-                    }),
-                ),
-            ));
+                    },
+                )));
+            }
         }
     }
 
@@ -1258,7 +1316,7 @@ pub(crate) fn init_root_menu<Message: Clone>(
     });
 }
 
-#[cfg(wayland_platform)]
+#[cfg(any(wayland_platform, all(target_os = "macos", feature = "winit")))]
 pub(super) fn init_root_popup_menu<Message>(
     menu: &mut Menu<'_, Message>,
     renderer: &crate::Renderer,
@@ -1556,8 +1614,8 @@ where
             .as_ref()
             .is_some_and(|i| *i != new_index && !active_menu[*i].children.is_empty());
 
-        #[cfg(wayland_platform)]
-        if matches!(WINDOWING_SYSTEM.get(), Some(WindowingSystem::Wayland)) && remove {
+        #[cfg(any(wayland_platform, all(target_os = "macos", feature = "winit")))]
+        if crate::surface::popups_are_surfaces() && remove {
             if let Some(id) = state.popup_id.remove(&menu.window_id) {
                 state.active_root.truncate(menu.depth + 1);
                 shell.publish((menu.on_surface_action.as_ref().unwrap())({

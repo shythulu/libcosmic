@@ -15,7 +15,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 /// Used to produce a destroy popup message from within a widget.
-#[cfg(wayland_platform)]
+#[cfg(any(wayland_platform, all(target_os = "macos", feature = "winit")))]
 #[must_use]
 pub fn destroy_popup<M>(id: iced_core::window::Id) -> Action<M> {
     Action::DestroyPopup(id)
@@ -177,6 +177,43 @@ pub fn simple_subsurface<Message: 'static>(
         Arc::new(boxed),
         Arc::new(Box::new(LiveSettings::default)),
         view.map(|view| Arc::from(view) as View<Message>),
+    )
+}
+
+/// Where a menu popup goes on macOS and how big it is. See [`macos_popup`].
+#[cfg(all(target_os = "macos", feature = "winit"))]
+#[derive(Clone, Copy, Debug)]
+pub struct MacosPopupSettings {
+    /// The window the popup belongs to: the window a context menu opened in, or the popup
+    /// a submenu opened from.
+    pub parent: iced::window::Id,
+    /// The popup's own window id.
+    pub id: iced::window::Id,
+    /// The popup's top-left corner, relative to the parent's content area. The popup is
+    /// moved to stay on screen, as a Wayland compositor moves a reactive popup.
+    pub offset: iced::Point,
+    /// The popup's size.
+    pub size: iced::Size,
+    /// The x offset to use instead when the popup would cross the screen's right edge, so
+    /// it flips to the other side of what opened it. `None` shifts it left instead.
+    pub flip_x: Option<f32>,
+}
+
+/// Creates a menu popup from within a widget on macOS: a borderless panel window that can
+/// extend past its parent window, standing in for a Wayland popup surface. Destroy it with
+/// [`destroy_popup`], as on Wayland.
+#[cfg(all(target_os = "macos", feature = "winit"))]
+#[must_use]
+pub fn macos_popup<Message: 'static>(
+    settings: MacosPopupSettings,
+    view: impl Fn() -> crate::Element<'static, crate::Action<Message>> + Send + Sync + 'static,
+) -> Action<Message> {
+    let boxed: Box<dyn Any + Send + Sync + 'static> = Box::new(settings);
+    let no_live_settings: Box<dyn Any + Send + Sync + 'static> = Box::new(());
+    Action::Popup(
+        Arc::new(boxed),
+        Arc::new(no_live_settings),
+        Some(Arc::new(view) as View<Message>),
     )
 }
 
