@@ -270,6 +270,10 @@ pub mod radio;
 #[doc(inline)]
 pub use radio::{Radio, radio};
 
+pub mod resize_edge;
+#[doc(inline)]
+pub use resize_edge::{ResizeEdge, resize_edge};
+
 pub mod rectangle_tracker;
 #[doc(inline)]
 pub use rectangle_tracker::{RectangleTracker, rectangle_tracking_container};

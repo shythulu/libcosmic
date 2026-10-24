@@ -663,9 +663,9 @@ impl<App: Application> ApplicationExt for App {
                 let main_content = self.view();
 
                 //TODO: reduce duplication
-                let context_width = core.context_width(has_nav);
                 if core.window.context_is_overlay && show_context {
                     if let Some(context) = self.context_drawer() {
+                        let context_width = core.context_width(has_nav, context.width);
                         widgets.push(
                             crate::widget::context_drawer(
                                 context.title,
@@ -703,6 +703,9 @@ impl<App: Application> ApplicationExt for App {
                             .into(),
                     );
                     if let Some(context) = self.context_drawer() {
+                        let context_width = core.context_width(has_nav, context.width);
+                        let on_resize = context.on_resize;
+                        let on_resize_end = context.on_resize_end;
                         widgets.push(
                             crate::widget::ContextDrawer::new_inner(
                                 context.title,
@@ -717,6 +720,20 @@ impl<App: Application> ApplicationExt for App {
                             .map(crate::Action::App)
                             .apply(container)
                             .width(context_width)
+                            .apply(|drawer| match on_resize {
+                                Some(on_resize) => {
+                                    let mut edge = crate::widget::resize_edge(
+                                        drawer,
+                                        crate::widget::resize_edge::Edge::Left,
+                                        move |width| crate::Action::App(on_resize(width)),
+                                    );
+                                    if let Some(message) = on_resize_end {
+                                        edge = edge.on_release(crate::Action::App(message));
+                                    }
+                                    Element::from(edge)
+                                }
+                                None => Element::from(drawer),
+                            })
                             .apply(|drawer| {
                                 Element::from(id_container(
                                     drawer,

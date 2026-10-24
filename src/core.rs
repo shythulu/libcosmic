@@ -21,6 +21,8 @@ pub struct NavBar {
     context_id: crate::widget::nav_bar::Id,
     toggled: bool,
     toggled_condensed: bool,
+    /// A width the app gave the nav bar, such as one the user dragged to.
+    width: Option<f32>,
 }
 
 /// COSMIC-specific settings for windows.
@@ -142,6 +144,7 @@ impl Default for Core {
                 context_id: crate::widget::nav_bar::Id::null(),
                 toggled: true,
                 toggled_condensed: false,
+                width: None,
             },
             scale_factor: 1.0,
             title: HashMap::new(),
@@ -194,6 +197,11 @@ impl Default for Core {
     }
 }
 
+/// The narrowest a context drawer can be dragged to.
+pub const CONTEXT_MIN_WIDTH: f32 = 280.0;
+/// The narrowest a resized context drawer can squeeze the main content.
+pub const CONTENT_MIN_WIDTH: f32 = 240.0;
+
 impl Core {
     /// Whether the window is too small for the nav bar + main content.
     #[must_use]
@@ -245,7 +253,7 @@ impl Core {
     /// Call this whenever the scaling factor or window width has changed.
     fn is_condensed_update(&mut self) {
         // Nav bar (280px) + padding (8px) + content (360px)
-        let mut breakpoint = 280.0 + 8.0 + 360.0;
+        let mut breakpoint = self.nav_bar_width() + 8.0 + 360.0;
         //TODO: the app may return None from the context_drawer function even if show_context is true
         if self.window.show_context && !self.window.context_is_overlay {
             // Context drawer min width (344px) + padding (8px)
@@ -265,21 +273,44 @@ impl Core {
     }
 
     #[inline]
-    pub(crate) fn context_width(&self, has_nav: bool) -> f32 {
+    pub(crate) fn context_width(&self, has_nav: bool, requested: Option<f32>) -> f32 {
         let window_width = self.window.width / self.scale_factor;
 
-        // Content width (360px) + padding (8px)
-        let mut reserved_width = 360.0 + 8.0;
+        let mut nav_width = 0.0;
         if has_nav {
             // Navbar width (280px) + padding (8px)
-            reserved_width += 280.0 + 8.0;
+            nav_width = self.nav_bar_width() + 8.0;
         }
+
+        // A width the user dragged to may be narrower or wider than the default range.
+        // It may squeeze the content further than the default does, down to its minimum.
+        if let Some(requested) = requested {
+            let available = window_width - nav_width - CONTENT_MIN_WIDTH - 8.0;
+            return requested.min(available).max(CONTEXT_MIN_WIDTH);
+        }
+
+        // Content width (360px) + padding (8px)
+        let available = window_width - nav_width - 360.0 - 8.0;
 
         #[allow(clippy::manual_clamp)]
         // This logic is to ensure the context drawer does not take up too much of the content's space
         // The minimum width is 344px and the maximum with is 480px
         // We want to keep the content at least 360px until going down to the minimum width
-        (window_width - reserved_width).min(480.0).max(344.0)
+        available.min(480.0).max(344.0)
+    }
+
+    /// The nav bar's width for layout decisions: the app's width, or the default 280px.
+    fn nav_bar_width(&self) -> f32 {
+        self.nav_bar.width.unwrap_or(280.0)
+    }
+
+    /// Tell libcosmic the nav bar's width when the app sizes it itself, so the context
+    /// drawer and the condensed breakpoint leave the right room for it.
+    pub fn set_nav_bar_width(&mut self, width: Option<f32>) {
+        if self.nav_bar.width != width {
+            self.nav_bar.width = width;
+            self.is_condensed_update();
+        }
     }
 
     #[cold]

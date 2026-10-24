@@ -12,6 +12,12 @@ pub struct ContextDrawer<'a, Message: Clone + 'static> {
     pub content: Element<'a, Message>,
     pub footer: Option<Element<'a, Message>>,
     pub on_close: Message,
+    /// The width the app asks for. The drawer still leaves room for the content.
+    pub width: Option<f32>,
+    /// Called with the new width while the user drags the drawer's left edge.
+    pub on_resize: Option<Box<dyn Fn(f32) -> Message + 'a>>,
+    /// Emitted when the drag on the drawer's edge ends.
+    pub on_resize_end: Option<Message>,
 }
 
 #[cfg(feature = "about")]
@@ -34,6 +40,9 @@ pub fn context_drawer<'a, Message: Clone + 'static>(
         content: content.into(),
         footer: None,
         on_close,
+        width: None,
+        on_resize: None,
+        on_resize_end: None,
     }
 }
 
@@ -62,6 +71,25 @@ impl<'a, Message: Clone + 'static> ContextDrawer<'a, Message> {
         self
     }
 
+    /// Ask for a width, such as one the user chose earlier by dragging the edge.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Let the user resize the drawer by dragging its left edge. `on_resize` gets the
+    /// width the drawer would have; pass it back through [`Self::width`].
+    pub fn on_resize(mut self, on_resize: impl Fn(f32) -> Message + 'a) -> Self {
+        self.on_resize = Some(Box::new(on_resize));
+        self
+    }
+
+    /// Emitted once when a resize drag ends, for saving the width.
+    pub fn on_resize_end(mut self, message: Message) -> Self {
+        self.on_resize_end = Some(message);
+        self
+    }
+
     pub fn map<Out: Clone + 'static>(
         self,
         on_message: fn(Message) -> Out,
@@ -73,6 +101,11 @@ impl<'a, Message: Clone + 'static> ContextDrawer<'a, Message> {
             content: self.content.map(on_message),
             footer: self.footer.map(|el| el.map(on_message)),
             on_close: on_message(self.on_close),
+            width: self.width,
+            on_resize: self.on_resize.map(|on_resize| {
+                Box::new(move |width| on_message(on_resize(width))) as Box<dyn Fn(f32) -> Out + 'a>
+            }),
+            on_resize_end: self.on_resize_end.map(on_message),
         }
     }
 }
